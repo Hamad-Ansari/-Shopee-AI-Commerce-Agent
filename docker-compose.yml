@@ -1,0 +1,60 @@
+# Development compose (local demo): Postgres + backend + dashboard, hot-reload volume.
+# For production use docker-compose.prod.yml (HTTPS proxy, no direct ports, backups).
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: shopbot
+      POSTGRES_PASSWORD: shopbot
+      POSTGRES_DB: shopbot
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shopbot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  backend:
+    build: .
+    restart: unless-stopped
+    command: sh -c "alembic upgrade head && uvicorn backend.main:app --host 0.0.0.0 --port 8000"
+    environment:
+      - SHOPEE_DATABASE_URL=postgresql+psycopg://shopbot:shopbot@db:5432/shopbot
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+
+  dashboard:
+    build: .
+    restart: unless-stopped
+    command: streamlit run app.py --server.address 0.0.0.0 --server.port 8501 --server.headless true
+    environment:
+      - BACKEND_URL=http://backend:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      - backend
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+volumes:
+  pgdata:

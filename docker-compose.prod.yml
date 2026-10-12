@@ -1,0 +1,89 @@
+# Production overlay — usage:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# What it changes vs the dev compose:
+#   - Caddy reverse proxy with automatic HTTPS (Let's Encrypt) on :80/:443
+#   - backend/dashboard publish NO ports (reachable only through the proxy)
+#   - Postgres password comes from the environment (POSTGRES_PASSWORD), never hardcoded
+#   - a backup sidecar dumps Postgres to a volume every 24h (scripts/backup_db.sh)
+#   - the source tree is NOT mounted into the containers (image-only)
+#
+# Required environment (e.g. in a .env next to this file or your shell):
+#   DOMAIN=shopbot.example.com          # your domain, DNS pointed at this host
+#   POSTGRES_PASSWORD=<strong secret>
+#   SHOPEE_* secrets (see .env.example) — Shopee/Open Platform, WhatsApp, etc.
+services:
+  db:
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the environment}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - backups:/backups
+
+  backend:
+    ports: [] # not published — proxy only
+    volumes: [] # image-only: no source mount in production
+    environment:
+      - SHOPEE_DATABASE_URL=postgresql+psycopg://shopbot:${POSTGRES_PASSWORD}@db:5432/shopbot
+      - SHOPEE_CORS_ALLOW_ORIGINS=https://${DOMAIN:?set DOMAIN in the environment}
+      # Secrets (set these in your deployment environment):
+      - SHOPEE_SHOPEE_CLIENT=${SHOPEE_SHOPEE_CLIENT:-mock}
+      - SHOPEE_SHOPEE_PARTNER_ID=${SHOPEE_SHOPEE_PARTNER_ID:-}
+      - SHOPEE_SHOPEE_PARTNER_KEY=${SHOPEE_SHOPEE_PARTNER_KEY:-}
+      - SHOPEE_SHOPEE_SHOP_ID=${SHOPEE_SHOPEE_SHOP_ID:-}
+      - SHOPEE_SHOPEE_ACCESS_TOKEN=${SHOPEE_SHOPEE_ACCESS_TOKEN:-}
+      - SHOPEE_WHATSAPP_CLIENT=${SHOPEE_WHATSAPP_CLIENT:-mock}
+      - SHOPEE_WHATSAPP_ACCESS_TOKEN=${SHOPEE_WHATSAPP_ACCESS_TOKEN:-}
+      - SHOPEE_WHATSAPP_PHONE_NUMBER_ID=${SHOPEE_WHATSAPP_PHONE_NUMBER_ID:-}
+      - SHOPEE_WHATSAPP_APP_SECRET=${SHOPEE_WHATSAPP_APP_SECRET:-}
+      - SHOPEE_WHATSAPP_VERIFY_TOKEN=${SHOPEE_WHATSAPP_VERIFY_TOKEN:-change-me}
+      - SHOPEE_LLM_PROVIDER=${SHOPEE_LLM_PROVIDER:-ollama}
+      - SHOPEE_LLM_FALLBACK_TO_RULES=true
+    depends_on:
+      db:
+        condition: service_healthy
+
+  dashboard:
+    ports: [] # not published — proxy only (https://DOMAIN/dashboard/)
+    environment:
+      - BACKEND_URL=https://${DOMAIN:?set DOMAIN in the environment}
+    command: streamlit run app.py --server.address 0.0.0.0 --server.port 8501 --server.headless true --server.baseUrlPath=/dashboard
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN:?set DOMAIN in the environment}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+      - dashboard
+
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - PGPASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the environment}
+    volumes:
+      - backups:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >-
+      sh -c "while true; do
+               pg_dump -h db -U shopbot -d shopbot -Fc -f /backups/shopbot-$$(date +%Y%m%d-%H%M%S).dump;
+               find /backups -name 'shopbot-*.dump' -mtime +7 -delete;
+               sleep 86400;
+             done"
+
+volumes:
+  pgdata:
+  backups:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,28 @@
+# Caddy reverse proxy — automatic HTTPS (Let's Encrypt) for ${DOMAIN}.
+# Routes:
+#   /                     -> FastAPI backend (API root + health + metrics)
+#   /chat /auth /products /orders /proposals /audit /webhooks -> backend
+#   /health/* /metrics /docs /openapi.json                  -> backend
+#   /dashboard/*          -> Streamlit dashboard (baseUrlPath=/dashboard)
+{
+	auto_https off # set to on (default) when DOMAIN is a real public domain; local IPs get a self-signed cert
+}
+
+:80, :443 {
+	tls internal
+
+	# API + monitoring endpoints -> FastAPI
+	@api path / /chat /chat/* /auth/* /products/* /orders /orders/* /proposals/* /audit /webhooks/* /health/* /metrics /docs /redoc /openapi.json
+	handle @api {
+		reverse_proxy backend:8000
+	}
+
+	# Dashboard -> Streamlit (mounted under /dashboard/)
+	handle_path /dashboard/* {
+		reverse_proxy dashboard:8501
+	}
+
+	handle {
+		respond "Shopee AI Commerce Agent — not found" 404
+	}
+}
